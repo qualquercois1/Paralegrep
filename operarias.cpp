@@ -76,11 +76,8 @@ int main() {
     Thread_operaria thread1("arq1.txt", "sistema");
     Thread_operaria thread2("arq2.txt", "comando");
 
-    thread1.iniciarThread();
-    thread2.iniciarThread();
-
-    thread1.esperarThread();
-    thread2.esperarThread();
+    thread1.executar();
+    thread2.executar();
 
     return 0;
 }
