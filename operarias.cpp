@@ -1,83 +1,51 @@
-#include <iostream>
-#include <fstream>
-#include <string>
-#include <pthread.h>
-#include <cstring>
-#include <cstdlib>
+#include "operarias.h"
 
-using namespace std;
 
-class Thread_operaria {
-    private:
-        pthread_t   thread_id;
-        string      nomeArquivo;
-        string      termo;
-        int         palavras = 0;
+void* Thread_operaria::threadFunc(void* arg) {
+    Thread_operaria* operaria = static_cast<Thread_operaria*>(arg);
+    operaria->listarTexto();
+    return nullptr;
+}
 
-        static pthread_mutex_t lock;
+ifstream Thread_operaria::abrirArquivo() const {
+    string caminho = "fileset/" + nomeArquivo;
+    ifstream arquivo(caminho);
 
-        static void* threadFunc(void* arg) {
-            Thread_operaria* operaria = static_cast<Thread_operaria*>(arg);
-            operaria->listarTexto();
-            return nullptr;
+    if (!arquivo.is_open()) {
+        cerr << "Erro ao abrir arquivo: " << caminho << endl;
+        exit(EXIT_FAILURE);
+    }
+
+    return arquivo;
+}
+
+void Thread_operaria::listarTexto() {
+    ifstream arquivo = abrirArquivo();
+    string linha;
+    int contador = 0;
+ 
+    while (getline(arquivo, linha)) {  
+        if (linha.find(termo) != string::npos) { 
+            contador++;
         }
+    }
 
-    public:
-        Thread_operaria(const string& arquivo, const string& buscaTermo) : nomeArquivo(arquivo), termo(buscaTermo) {
-            thread_id = pthread_self();
-        }      
+    palavras = contador;
+}
 
-        ifstream abrirArquivo() const {
-            string caminho = "fileset/" + nomeArquivo;
-            ifstream arquivo(caminho);
+void Thread_operaria::iniciarThread() {
+    pthread_create(&thread_id, nullptr, threadFunc, this);
+}
 
-            if (!arquivo.is_open()) {
-                cerr << "Erro ao abrir arquivo: " << caminho << endl;
-                exit(EXIT_FAILURE);
-            }
 
-            return arquivo;
-        }
+void Thread_operaria::esperarThread() {
+    pthread_join(thread_id, nullptr);
+}
 
-        void listarTexto() {
-            ifstream arquivo = abrirArquivo();
-            string linha;
-            int contador = 0;
-
-            pthread_mutex_lock(&lock);  
-            while (getline(arquivo, linha)) {  
-                if (linha.find(termo) != string::npos) { 
-                    contador++;
-                }
-            }
-            pthread_mutex_unlock(&lock); 
-
-            palavras = contador;
-            cout << contador << endl;
-        }        
-
-        void iniciarThread() {
-            pthread_create(&thread_id, nullptr, threadFunc, this);
-        }
-
-        void esperarThread() {
-            pthread_join(thread_id, nullptr);
-        }
-
-        void executar() {
-            iniciarThread();
-            esperarThread();
-        }
-};
-
-pthread_mutex_t Thread_operaria::lock = PTHREAD_MUTEX_INITIALIZER;
-
-int main() {
-    Thread_operaria thread1("arq1.txt", "sistema");
-    Thread_operaria thread2("arq2.txt", "comando");
-
-    thread1.executar();
-    thread2.executar();
-
-    return 0;
+int Thread_operaria::executar(string arquivo, string nomeTermo) {
+    nomeArquivo = arquivo;
+    termo = nomeTermo;
+    iniciarThread();
+    esperarThread();
+    return palavras;
 }
