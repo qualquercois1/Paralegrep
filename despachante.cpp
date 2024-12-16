@@ -6,88 +6,60 @@
 #include <cstring>
 #include <dirent.h>
 #include <unistd.h>
-#include <sys/stat.h>
-#include <map>
-#include <unordered_set>
+#include <filesystem>
 
 #include "operarias.h"
 
 #define N_Operarias 4
 
 using namespace std;
+namespace fs = std::filesystem;
 
 pthread_mutex_t mutex_filas = PTHREAD_MUTEX_INITIALIZER;
+
+typedef struct {
+    string nome_arq;
+    filesystem::file_time_type data_ultima_alteracao;
+}Arquivo;
 
 class Thread_despachante {
 private:
     pthread_t                   thread_id;
-    queue<string>               fila_arquivos;
+    queue<Arquivo>              fila_arquivos;
     queue<Thread_operaria>      fila_threads;
-    map<string, time_t>         arquivos_processados; 
     string                      termo;
     vector<pair<string, int>>   resultados;
-    unordered_set<string>       arquivos_na_fila;
+
 
 public:
     Thread_despachante() {
         thread_id = pthread_self();
     }
 
-void listaArquivos() {
-    const string diretorio = "fileset";
-    DIR* dir = opendir(diretorio.c_str());
-    if (!dir) {
-        cerr << "Erro ao abrir o diretório: " << diretorio << endl;
-        return;
-    }
+    void criaArquivos() {
+        const string diretorio = "fileset";
+        DIR* dir = opendir(diretorio.c_str());
+        if (!dir) {
+            cerr << "Erro ao abrir o diretório: " << diretorio << endl;
+            return;
+        }
 
-    struct dirent* entrada;
-    while ((entrada = readdir(dir)) != nullptr) {
-        if (strcmp(entrada->d_name, ".") != 0 && strcmp(entrada->d_name, "..") != 0) {
-            string nome_arquivo = entrada->d_name;  // Usando apenas o nome do arquivo
-            string caminho_completo = diretorio + "/" + nome_arquivo;
+        struct dirent* entrada;
+        while ((entrada = readdir(dir)) != nullptr) {
+            if (strcmp(entrada->d_name, ".") != 0 && strcmp(entrada->d_name, "..") != 0) {
+                string nome_arquivo = entrada->d_name; 
+                string caminho_completo = diretorio + "/" + nome_arquivo;
 
-            struct stat info;
-            if (stat(caminho_completo.c_str(), &info) == 0) {
-                pthread_mutex_lock(&mutex_filas);
-                
-                // Verifica se o arquivo foi modificado
-                if (arquivos_processados[caminho_completo] != info.st_mtime) {
-                    // Se o arquivo foi alterado, remova da fila e coloque novamente
-                    queue<string> temp_queue;
-                    bool arquivo_encontrado = false;
 
-                    // Remover o arquivo antigo da fila, se necessário
-                    while (!fila_arquivos.empty()) {
-                        string arquivo = fila_arquivos.front();
-                        fila_arquivos.pop();
-                        if (arquivo == nome_arquivo && !arquivo_encontrado) {
-                            arquivo_encontrado = true;  // Encontramos o arquivo, então não o adicionamos de volta
-                        } else {
-                            temp_queue.push(arquivo);  // Mantém os outros arquivos
-                        }
-                    }
-
-                    // Coloca o arquivo modificado novamente na fila
-                    temp_queue.push(nome_arquivo);
-                    fila_arquivos = temp_queue;
-
-                    // Atualizar o timestamp do arquivo processado
-                    arquivos_processados[caminho_completo] = info.st_mtime;
-
-                    // A partir daqui, o processamento dos dados novos/alterados será feito
-                    // Sem limpar os resultados anteriores, mas apenas adicionando os novos
-                }
-                
-                pthread_mutex_unlock(&mutex_filas);
+                Arquivo temp;
+                temp.nome_arq = nome_arquivo;
+                temp.data_ultima_alteracao = fs::last_write_time(caminho_completo);
+                fila_arquivos.push(temp);
             }
         }
+
+        closedir(dir);
     }
-
-    closedir(dir);
-}
-
-
 
     void criaOperarias() {
         pthread_mutex_lock(&mutex_filas);
@@ -97,61 +69,121 @@ void listaArquivos() {
         pthread_mutex_unlock(&mutex_filas);
     }
 
-    static void* threadExecutaOperaria(void* arg) {
-        auto* despachante = static_cast<Thread_despachante*>(arg);
-        despachante->executaOperaria();
-        return nullptr;
+    void atualizaArquivos() {
+        //limpa a fila
+        while(!fila_arquivos.empty()) {
+            fila_arquivos.pop();
+        }
+
+        const string diretorio = "fileset";
+        DIR* dir = opendir(diretorio.c_str());
+        if (!dir) {
+            cerr << "Erro ao abrir o diretório: " << diretorio << endl;
+            return;
+        }
+
+        struct dirent* entrada;
+        while ((entrada = readdir(dir)) != nullptr) {
+            if (strcmp(entrada->d_name, ".") != 0 && strcmp(entrada->d_name, "..") != 0) {
+                string nome_arquivo = entrada->d_name; 
+                string caminho_completo = diretorio + "/" + nome_arquivo;
+
+
+                Arquivo temp;
+                temp.nome_arq = nome_arquivo;
+                temp.data_ultima_alteracao = fs::last_write_time(caminho_completo);
+                fila_arquivos.push(temp);
+            }
+        }
+
+        closedir(dir);
+    }
+
+
+    void listaArquivos(queue<Arquivo> &fila_original) {
+        auto copia_a = fila_arquivos;
+        auto copia_b = fila_original;
+        int tam_a = fila_arquivos.size();
+        int tam_b = fila_original.size();
+        if(tam_a > tam_b || tam_a < tam_b) {
+            //verifica se foi adicionado ou excluido um arquivo
+            fila_original = fila_arquivos;
+        } else {
+            //verifica se algum arquivo foi alterado pela data de modificação
+            while(!fila_arquivos.empty()) {
+                if(fila_arquivos.front().data_ultima_alteracao != fila_original.front().data_ultima_alteracao) {
+                    fila_arquivos = copia_a;
+                    fila_original = fila_arquivos;
+                    return;
+                }
+                fila_arquivos.pop();
+                fila_original.pop();
+            }
+            fila_arquivos = copia_a;
+            fila_original = copia_b;
+        }
+    }
+
+    bool verificaResultado(string str) {
+        for(auto a : resultados) {
+            if(str == a.first) return true;
+        }
+        return false;
+    }
+
+    void inserirResultado(string str, int n) {
+        for(auto &a : resultados) {
+            if(str == a.first) {
+                a.second = n;
+            }
+        }
     }
 
     void executaOperaria() {
-        while (true) {
+
+        auto copia = fila_arquivos;
+        while (!fila_arquivos.empty()) {
+
             pthread_mutex_lock(&mutex_filas);
-
-            if (fila_threads.empty() || fila_arquivos.empty()) {
-                pthread_mutex_unlock(&mutex_filas);
-                sleep(1); // Evita espera ativa
-                continue;
-            }
-
-            string arquivo = fila_arquivos.front();
+            Arquivo arquivo = fila_arquivos.front();
             fila_arquivos.pop();
-
-            Thread_operaria thread_op = fila_threads.front();
-            fila_threads.pop();
             pthread_mutex_unlock(&mutex_filas);
 
-            int ocorrencias = thread_op.executar(arquivo, termo);
+            Thread_operaria operaria = fila_threads.front();
+            fila_threads.pop();
+
+            int n = operaria.executar(arquivo.nome_arq, termo);
+
+            if(verificaResultado(arquivo.nome_arq)) inserirResultado(arquivo.nome_arq, n);
+            else resultados.push_back(make_pair(arquivo.nome_arq,n));
 
             pthread_mutex_lock(&mutex_filas);
-            fila_threads.push(thread_op);
-            resultados.push_back({arquivo, ocorrencias});
+            fila_threads.push(operaria);
             pthread_mutex_unlock(&mutex_filas);
-
-            cout << arquivo << ", Ocorrências: " << ocorrencias << endl;
+            
         }
+        pthread_mutex_unlock(&mutex_filas);
+        usleep(100000);
+        fila_arquivos = copia;
     }
 
     void administra(string Termo) {
         termo = Termo;
         criaOperarias();
+        criaArquivos();
 
-        pthread_t threads[N_Operarias];
-        for (int i = 0; i < N_Operarias; ++i) {
-            pthread_create(&threads[i], nullptr, threadExecutaOperaria, this);
-        }
-
-        while (true) {
-            listaArquivos(); // Verifica se há novos ou alterados
-            sleep(5);       // Aguarda antes de verificar novamente
+        while(true) {
+            auto aux = fila_arquivos;
+            atualizaArquivos();
+            listaArquivos(aux);
+            executaOperaria();
             for(auto a : resultados) {
-                cout << "debug: " << a.first << " " << a.second << endl;
-            }  
+                cout << a.first << " " << a.second << endl;
+            }
+            cout << endl;
+            sleep(3);
         }
 
-        for (int i = 0; i < N_Operarias; ++i) {
-            pthread_join(threads[i], nullptr);
-        }
-        cout << "//////////" << endl;
     }
 };
 
